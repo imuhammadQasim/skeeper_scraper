@@ -8,7 +8,7 @@ import {
   addProduct,
   updateLastChecked,
 } from "./storage.js";
-import { notifyNewProduct } from "./notifications.js";
+import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
 
 dotenv.config();
 
@@ -25,7 +25,7 @@ const SKEEPERS_PASSWORD = process.env.SKEEPERS_PASSWORD;
 
 async function performLogin(page) {
   console.log("Attempting automated login...");
-  await page.goto(LOGIN_URL, { waitUntil: "networkidle" });
+  await page.goto(LOGIN_URL, { waitUntil: "load", timeout: 60000 });
 
   // Selectors for Skeepers login
   await page.fill('input[name="email"]', SKEEPERS_EMAIL);
@@ -33,7 +33,10 @@ async function performLogin(page) {
   await page.click('button[type="submit"]');
 
   // Wait for navigation after login
-  await page.waitForNavigation({ waitUntil: "networkidle" });
+  await page.waitForNavigation({
+    waitUntil: "domcontentloaded",
+    timeout: 60000,
+  });
 
   // Save state
   await page.context().storageState({ path: AUTH_FILE });
@@ -43,7 +46,10 @@ async function performLogin(page) {
 async function scrapeSkeepers() {
   let browser;
   try {
-    browser = await chromium.launch({ headless: HEADLESS });
+    browser = await chromium.launch({
+      headless: HEADLESS,
+      args: ["--disable-gpu", "--disable-dev-shm-usage"],
+    });
     let context;
 
     if (fs.existsSync(AUTH_FILE)) {
@@ -55,15 +61,23 @@ async function scrapeSkeepers() {
     }
 
     const page = await context.newPage();
+    // Small delay to stabilize browser process on Windows
+    await page.waitForTimeout(2000);
 
     // Go to monitor URL
     console.log(`Navigating to ${MONITOR_URL}...`);
-    await page.goto(MONITOR_URL, { waitUntil: "networkidle" });
+    await page.goto(MONITOR_URL, {
+      waitUntil: "domcontentloaded",
+      timeout: 60000,
+    });
 
     // If we are redirected to login/signin, perform login
     if (page.url().includes("login") || page.url().includes("signin")) {
       await performLogin(page);
-      await page.goto(MONITOR_URL, { waitUntil: "networkidle" });
+      await page.goto(MONITOR_URL, {
+        waitUntil: "domcontentloaded",
+        timeout: 60000,
+      });
     }
 
     // --- SELECTOR LOGIC ---
@@ -200,9 +214,28 @@ async function main() {
     process.exit(1);
   }
 
+  let lastHeartbeat = 0;
+  let scrapeCount = 0;
+  const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+
   while (true) {
     try {
       await scrapeSkeepers();
+      scrapeCount++;
+
+      // Check if it's time to send a status heartbeat to the client
+      const now = Date.now();
+      if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
+        console.log("Sending daily heartbeat status email...");
+        const seenProducts = await loadSeenProducts();
+        await sendHeartbeat({
+          totalItems: seenProducts.length,
+          interval: CHECK_INTERVAL,
+          scrapeCount: scrapeCount,
+        });
+        lastHeartbeat = now;
+        scrapeCount = 0; // Reset counter for the next 24-hour period
+      }
     } catch (err) {
       console.error("Monitor loop error:", err);
     }

@@ -76,3 +76,46 @@ export async function notifyNewProduct(productName, productLink) {
   // To enable Telegram, uncomment the line below:
   // await sendTelegramAlert(productName, productLink);
 }
+
+export async function sendHeartbeat(stats) {
+  if (!EMAIL_USER || !EMAIL_PASS || !EMAIL_RECEIVER) {
+    console.warn("Email configuration missing. Skipping heartbeat.");
+    return;
+  }
+
+  const transporter = nodemailer.createTransport({
+    host: SMTP_SERVER || "smtp.gmail.com",
+    port: parseInt(SMTP_PORT) || 587,
+    auth: {
+      user: EMAIL_USER,
+      pass: EMAIL_PASS,
+    },
+  });
+
+  const now = new Date().toLocaleString();
+  const mailOptions = {
+    from: EMAIL_USER,
+    to: EMAIL_RECEIVER,
+    subject: `✅ Skeepers Monitor Status: OK (${new Date().toLocaleDateString()})`,
+    html: `
+      <div style="font-family: sans-serif; border: 1px solid #e0e0e0; padding: 20px; border-radius: 10px;">
+        <h2 style="color: #2e7d32;">System Status: Operational</h2>
+        <p>This is a daily heartbeat message to confirm your Skeepers automation tool is running correctly.</p>
+        <hr style="border: 0; border-top: 1px solid #eee;" />
+        <p><strong>Last Check:</strong> ${now}</p>
+        <p><strong>Total Items Tracked:</strong> ${stats.totalItems}</p>
+        <p><strong>Total Site Checks:</strong> ${stats.scrapeCount}</p>
+        <p><strong>Status:</strong> Scraper is active and monitoring every ${stats.interval} seconds.</p>
+        <br />
+        <p style="font-size: 12px; color: #757575;">You will receive instant alerts separately if any new products are detected.</p>
+      </div>
+    `,
+  };
+
+  try {
+    await transporter.sendMail(mailOptions);
+    console.log(`Heartbeat email sent at ${now}`);
+  } catch (error) {
+    console.error("Error sending heartbeat:", error);
+  }
+}
