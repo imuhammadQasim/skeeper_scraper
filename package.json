@@ -1,0 +1,19 @@
+{
+  "name": "node_scrapper",
+  "version": "1.0.0",
+  "description": "A backend automation tool to monitor Skeepers for new product listings.",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node scraper.js",
+    "login": "node loginHelper.js",
+    "test": "node quick-test.js",
+    "migrate": "node migrate-db.js"
+  },
+  "dependencies": {
+    "axios": "^1.13.2",
+    "dotenv": "^17.2.3",
+    "nodemailer": "^7.0.12",
+    "playwright": "^1.58.0"
+  }
+}
