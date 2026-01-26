@@ -218,6 +218,18 @@ async function main() {
   let scrapeCount = 0;
   const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
+  if (process.env.RUN_ONCE === "true") {
+    console.log("Running in SINGLE-RUN mode (RUN_ONCE=true)...");
+    try {
+      await scrapeSkeepers();
+      console.log("Scrape completed successfully.");
+    } catch (err) {
+      console.error("Scrape failed:", err);
+      process.exit(1);
+    }
+    process.exit(0);
+  }
+
   while (true) {
     try {
       await scrapeSkeepers();
