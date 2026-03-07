@@ -1,6 +1,51 @@
 import fs from "fs/promises";
 import { existsSync } from "fs";
 
+const DATA_DIR = "./data";
+const SEEN_CAMPAIGNS_FILE = `${DATA_DIR}/seenCampaigns.json`;
+
+/**
+ * Initialize data directory
+ */
+async function ensureDataDir() {
+  if (!existsSync(DATA_DIR)) {
+    await fs.mkdir(DATA_DIR, { recursive: true });
+  }
+}
+
+/**
+ * Load seen campaign IDs from JSON file
+ * Returns an array of strings
+ */
+export async function loadSeenCampaigns() {
+  await ensureDataDir();
+  if (!existsSync(SEEN_CAMPAIGNS_FILE)) {
+    return [];
+  }
+  try {
+    const data = await fs.readFile(SEEN_CAMPAIGNS_FILE, "utf-8");
+    return JSON.parse(data);
+  } catch (error) {
+    console.error("Error reading seen campaigns:", error);
+    return [];
+  }
+}
+
+/**
+ * Save seen campaign IDs to JSON file
+ * @param {Array} ids - Array of campaign ID strings
+ */
+export async function saveSeenCampaigns(ids) {
+  try {
+    await ensureDataDir();
+    await fs.writeFile(SEEN_CAMPAIGNS_FILE, JSON.stringify(ids, null, 2));
+  } catch (error) {
+    console.error("Error saving seen campaigns:", error);
+  }
+}
+
+// Keep the old functions for backward compatibility if needed, but update DB_FILE path if necessary
+// (Assuming the user might still want to use the old system for something else or I'll just keep them for now)
 const DB_FILE = "seen_products.json";
 
 /**
@@ -46,11 +91,6 @@ export function isNewProduct(productId, seenProducts) {
  * Add a new product to the seen products list
  * @param {Array} seenProducts - Current array of seen products
  * @param {Object} productData - Product data to add
- * @param {string} productData.id - Product/campaign ID
- * @param {string} productData.title - Product title
- * @param {string} productData.storeName - Store/brand name
- * @param {string} productData.link - Full URL to the product
- * @param {boolean} [productData.isSoldOut=false] - Whether the product is sold out
  * @returns {Array} - Updated array with new product
  */
 export function addProduct(seenProducts, productData) {

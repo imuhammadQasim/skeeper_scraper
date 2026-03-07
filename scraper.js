@@ -1,259 +1,288 @@
-import { chromium } from "playwright";
-import fs from "fs";
+import axios from "axios";
 import dotenv from "dotenv";
-import {
-  loadSeenProducts,
-  saveSeenProducts,
-  isNewProduct,
-  addProduct,
-  updateLastChecked,
-} from "./storage.js";
+import { chromium } from "playwright";
+import { loadSeenCampaigns, saveSeenCampaigns } from "./storage.js";
 import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
 
 dotenv.config();
 
 // Configuration
-const MONITOR_URL =
-  process.env.MONITOR_URL || "https://creator.im.skeepers.io/campaigns/search";
+const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
 const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/en";
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 300;
-const HEADLESS = process.env.HEADLESS !== "false";
+const CHECK_INTERVAL = 30; // 120 seconds as requested
 const AUTH_FILE = "auth.json";
 
 const SKEEPERS_EMAIL = process.env.SKEEPERS_EMAIL;
 const SKEEPERS_PASSWORD = process.env.SKEEPERS_PASSWORD;
 
-async function performLogin(page) {
-  console.log("Attempting automated login...");
-  await page.goto(LOGIN_URL, { waitUntil: "load", timeout: 60000 });
+let authHeaders = {};
 
-  // Selectors for Skeepers login
-  await page.fill('input[name="email"]', SKEEPERS_EMAIL);
-  await page.fill('input[name="password"]', SKEEPERS_PASSWORD);
-  await page.click('button[type="submit"]');
+/**
+ * Perform login and extract necessary auth headers
+ */
+async function refreshAuth() {
+  console.log("Refreshing authentication session...");
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
 
-  // Wait for navigation after login
-  await page.waitForNavigation({
-    waitUntil: "domcontentloaded",
-    timeout: 60000,
-  });
-
-  // Save state
-  await page.context().storageState({ path: AUTH_FILE });
-  console.log("Login successful and session saved.");
-}
-
-async function scrapeSkeepers() {
-  let browser;
   try {
-    browser = await chromium.launch({
-      headless: HEADLESS,
-      args: ["--disable-gpu", "--disable-dev-shm-usage"],
-    });
-    let context;
+    await page.goto(LOGIN_URL, { waitUntil: "networkidle", timeout: 60000 });
 
-    if (fs.existsSync(AUTH_FILE)) {
-      console.log("Using saved session...");
-      context = await browser.newContext({ storageState: AUTH_FILE });
-    } else {
-      console.log("No saved session. Performing fresh login...");
-      context = await browser.newContext();
-    }
-
-    const page = await context.newPage();
-    // Small delay to stabilize browser process on Windows
-    await page.waitForTimeout(2000);
-
-    // Go to monitor URL
-    console.log(`Navigating to ${MONITOR_URL}...`);
-    await page.goto(MONITOR_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-
-    // If we are redirected to login/signin, perform login
+    // Check if we need to login
     if (page.url().includes("login") || page.url().includes("signin")) {
-      await performLogin(page);
-      await page.goto(MONITOR_URL, {
-        waitUntil: "domcontentloaded",
+      console.log("Automated login in progress...");
+      await page.fill('input[name="email"]', SKEEPERS_EMAIL);
+      await page.fill('input[name="password"]', SKEEPERS_PASSWORD);
+      await page.click('button[type="submit"]');
+      await page.waitForNavigation({
+        waitUntil: "networkidle",
         timeout: 60000,
       });
     }
 
-    // --- SELECTOR LOGIC ---
-    // Based on actual HTML: campaigns are in <a> tags with class starting with "Campaign-sc-"
-    const campaignSelector = 'a[class*="Campaign-sc-"]';
+    // Save storage state
+    await context.storageState({ path: AUTH_FILE });
 
-    try {
-      await page.waitForSelector(campaignSelector, { timeout: 15000 });
-    } catch (e) {
-      console.warn(
-        "Timed out waiting for campaign cards. The page might not have loaded or there are no campaigns.",
+    // Extract token from localStorage
+    const token = await page.evaluate(() => {
+      // Try to find the token in known localStorage keys
+      return (
+        localStorage.getItem("skeepers_auth_token_production") ||
+        localStorage.getItem("token") ||
+        localStorage.getItem("auth_token") ||
+        localStorage.getItem("skeepers_auth_token")
       );
-      console.log(`Current URL: ${page.url()}`);
-      // Take a screenshot for debugging
-      await page.screenshot({ path: "debug-no-campaigns.png" });
-      return;
-    }
+    });
 
-    const campaigns = await page.$$(campaignSelector);
-    console.log(`Found ${campaigns.length} campaigns on page.`);
+    if (token) {
+      authHeaders = {
+        "access-token": token,
+        "x-requested-with": "XMLHttpRequest",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://creator.im.skeepers.io",
+        Referer: "https://creator.im.skeepers.io/",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      };
+      console.log("Auth token extracted successfully and headers updated.");
+    } else {
+      // Fallback: try to find it in cookies
+      const cookies = await context.cookies();
+      const accessTokenCookie = cookies.find(
+        (c) =>
+          c.name === "access-token" ||
+          c.name === "skeepers_auth_token_production",
+      );
 
-    let seenProducts = await loadSeenProducts();
-    let newCount = 0;
-
-    for (const campaign of campaigns) {
-      try {
-        // Get the href directly from the <a> tag
-        const href = await campaign.getAttribute("href");
-
-        if (!href) continue;
-
-        // Extract campaign ID from href (e.g., /campaigns/hd5lb -> hd5lb)
-        const campaignId = href.split("/").pop();
-
-        // Get the title from the <strong> tag with class starting with "Title-sc-"
-        const titleElement = await campaign.$('strong[class*="Title-sc-"]');
-        const title = titleElement
-          ? (await titleElement.textContent()).trim()
-          : "New Campaign";
-
-        // Get the store name
-        const storeElement = await campaign.$('div[class*="StoreTitle-sc-"]');
-        const storeName = storeElement
-          ? (await storeElement.textContent()).trim()
-          : "";
-
-        // CHECK IF SOLD OUT
-        const soldOutElement = await campaign.$('[class*="OutOfStock-sc-"]');
-        const isSoldOut = soldOutElement !== null;
-
-        const fullLink = href.startsWith("http")
-          ? href
-          : `https://creator.im.skeepers.io${href}`;
-
-        // Find existing product in database
-        const existingProductIndex = seenProducts.findIndex(
-          (p) => p.id === campaignId,
-        );
-
-        if (existingProductIndex === -1) {
-          // NEW PRODUCT
-          const productInfo = storeName ? `${title} - ${storeName}` : title;
-
-          console.log(
-            `✨ NEW CAMPAIGN DETECTED: ${productInfo} (${campaignId}) [SoldOut: ${isSoldOut}]`,
-          );
-
-          // Add to seen products with full metadata
-          seenProducts = addProduct(seenProducts, {
-            id: campaignId,
-            title: title,
-            storeName: storeName,
-            link: fullLink,
-            isSoldOut: isSoldOut,
-          });
-
-          // ONLY NOTIFY IF NOT SOLD OUT
-          if (!isSoldOut) {
-            await notifyNewProduct(productInfo, fullLink);
-            newCount++;
-          } else {
-            console.log(
-              `⏭️ Skipping notification for ${productInfo} (Sold out)`,
-            );
-          }
-        } else {
-          // EXISTING PRODUCT - Update its metadata and status
-          const existingProduct = seenProducts[existingProductIndex];
-          const oldStatus = existingProduct.isSoldOut;
-
-          // Update details (to fill in "Unknown" from migration or refresh data)
-          existingProduct.title = title;
-          existingProduct.storeName = storeName;
-          existingProduct.link = fullLink;
-          existingProduct.isSoldOut = isSoldOut;
-
-          // If it was sold out and is now available, notify!
-          if (oldStatus === true && isSoldOut === false) {
-            const productInfo = storeName ? `${title} - ${storeName}` : title;
-            console.log(
-              `🔥 PRODUCT BACK IN STOCK: ${productInfo} (${campaignId})`,
-            );
-            await notifyNewProduct(`[BACK IN STOCK] ${productInfo}`, fullLink);
-          }
-        }
-      } catch (err) {
-        console.error("Error processing campaign:", err);
-        continue;
+      if (accessTokenCookie) {
+        authHeaders = {
+          "access-token": accessTokenCookie.value,
+          "x-requested-with": "XMLHttpRequest",
+          Accept: "application/json",
+          Origin: "https://creator.im.skeepers.io",
+          Referer: "https://creator.im.skeepers.io/",
+          "User-Agent":
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        };
+        console.log("Token found in cookies successfully.");
+      } else {
+        console.warn("Could not find auth token in localStorage or cookies.");
       }
     }
-
-    // Update last checked timestamp for all products
-    seenProducts = updateLastChecked(seenProducts);
-
-    // Save to database
-    await saveSeenProducts(seenProducts);
-
-    if (newCount > 0) {
-      console.log(`✅ Saved ${newCount} new campaign(s) to database.`);
-    } else {
-      console.log("No new campaigns found.");
-    }
   } catch (error) {
-    console.error("An error occurred during scraping:", error);
+    console.error("Error during auth refresh:", error);
   } finally {
-    if (browser) await browser.close();
+    await browser.close();
   }
 }
 
-async function main() {
-  console.log("--- Skeepers Creator Monitor Started ---");
+/**
+ * Fetch a single page of campaigns
+ */
+async function fetchCampaignPage(pageNumber) {
+  try {
+    const response = await axios.get(API_URL, {
+      params: {
+        format: "attributes",
+        include: "store",
+        "page[size]": 9,
+        "page[number]": pageNumber,
+        sort: "-last_published_at",
+      },
+      headers: {
+        ...authHeaders,
+        // Ensure no caching headers that would cause 304
+        "If-None-Match": undefined,
+        "If-Modified-Since": undefined,
+      },
+    });
+
+    return response.data || [];
+  } catch (error) {
+    if (
+      error.response &&
+      (error.response.status === 401 || error.response.status === 403)
+    ) {
+      console.log("Session expired. Refreshing auth...");
+      await refreshAuth();
+      // Retry once after refresh
+      return await fetchCampaignPage(pageNumber);
+    }
+    console.error(`Error fetching page ${pageNumber}:`, error.message);
+    return [];
+  }
+}
+
+/**
+ * Fetch campaigns from multiple pages
+ */
+async function fetchAllCampaigns() {
+  console.log("Checking campaigns...");
+  let allCampaigns = [];
+  // Fetch campaigns from pages 1 to 7 to cover ~60 products
+  for (let page = 1; page <= 7; page++) {
+    const campaigns = await fetchCampaignPage(page);
+    allCampaigns = allCampaigns.concat(campaigns);
+  }
+  console.log(`Found ${allCampaigns.length} campaigns across pages`);
+  return allCampaigns;
+}
+
+/**
+ * Check if a campaign is available (not sold out and not closed)
+ */
+function isCampaignAvailable(campaign) {
+  const attrs = campaign.attributes || campaign; // Handle different response formats if needed
+
+  // A campaign is available when: sold_out === false, closed === false, status !== "closed"
+  const isAvailable =
+    attrs.sold_out === false &&
+    attrs.closed === false &&
+    attrs.status !== "closed";
+
+  return isAvailable;
+}
+
+/**
+ * Process campaigns and notify for new ones
+ */
+async function checkForNewCampaigns(isBootstrap = false) {
+  try {
+    const campaigns = await fetchAllCampaigns();
+    let seenCampaigns = await loadSeenCampaigns();
+    let newlySeenCount = 0;
+
+    for (const campaign of campaigns) {
+      const campaignId = campaign.id;
+      const attrs = campaign.attributes || campaign;
+      const title = attrs.title || "Unknown Campaign";
+      const storeName = attrs.store?.display_name || attrs.store?.name || "";
+      const productInfo = storeName ? `${title} - ${storeName}` : title;
+      const webPath = campaign.web_path || attrs.web_path;
+      const fullLink = `https://app.im.skeepers.io${webPath}`;
+
+      if (seenCampaigns.includes(campaignId)) {
+        // Already seen, skip duplicate notification
+        continue;
+      }
+
+      // NEW campaign detected
+      if (!isBootstrap) {
+        if (isCampaignAvailable(campaign)) {
+          console.log(`✨ New campaign detected: ${productInfo}`);
+          await notifyNewProduct(productInfo, fullLink);
+        } else {
+          const reason = attrs.sold_out
+            ? "sold out"
+            : attrs.status === "closed" || attrs.closed
+              ? "closed"
+              : "unavailable";
+          console.log(
+            `⏭️  New campaign detected: ${productInfo} (Skipping: ${reason})`,
+          );
+        }
+      }
+
+      // Add to cache
+      seenCampaigns.push(campaignId);
+      newlySeenCount++;
+    }
+
+    if (newlySeenCount > 0) {
+      await saveSeenCampaigns(seenCampaigns);
+    }
+
+    if (isBootstrap) {
+      console.log(
+        `Bootstrap completed. Processed ${newlySeenCount} campaigns.`,
+      );
+    }
+  } catch (error) {
+    console.error("Error in checkForNewCampaigns:", error);
+  }
+}
+
+/**
+ * Main monitoring loop
+ */
+async function startMonitor() {
+  console.log("--- Skeepers API Monitor Started ---");
+
   if (!SKEEPERS_EMAIL || !SKEEPERS_PASSWORD) {
     console.error("ERROR: SKEEPERS_EMAIL or SKEEPERS_PASSWORD not set in .env");
     process.exit(1);
   }
 
-  let lastHeartbeat = 0;
+  // Initial auth
+  await refreshAuth();
+
+  // 5 Bootstrap step: load existing campaigns without sending alerts
+  console.log("Bootstrapping existing campaigns...");
+  await checkForNewCampaigns(true);
+
+  let lastHeartbeat = Date.now();
   let scrapeCount = 0;
   const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
-  if (process.env.RUN_ONCE === "true") {
-    console.log("Running in SINGLE-RUN mode (RUN_ONCE=true)...");
-    try {
-      await scrapeSkeepers();
-      console.log("Scrape completed successfully.");
-    } catch (err) {
-      console.error("Scrape failed:", err);
-      process.exit(1);
-    }
-    process.exit(0);
-  }
-
+  // 6 Monitoring loop
   while (true) {
     try {
-      await scrapeSkeepers();
+      await checkForNewCampaigns(false);
       scrapeCount++;
 
-      // Check if it's time to send a status heartbeat to the client
+      // Heartbeat logic
       const now = Date.now();
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
-        console.log("Sending daily heartbeat status email...");
-        const seenProducts = await loadSeenProducts();
+        console.log("Sending daily heartbeat...");
+        const seenCampaigns = await loadSeenCampaigns();
         await sendHeartbeat({
-          totalItems: seenProducts.length,
+          totalItems: seenCampaigns.length,
           interval: CHECK_INTERVAL,
           scrapeCount: scrapeCount,
         });
         lastHeartbeat = now;
-        scrapeCount = 0; // Reset counter for the next 24-hour period
+        scrapeCount = 0;
       }
     } catch (err) {
-      console.error("Monitor loop error:", err);
+      console.error("Error in monitor cycle:", err);
     }
-    console.log(`Waiting ${CHECK_INTERVAL} seconds for next check...`);
+
+    console.log(`Waiting ${CHECK_INTERVAL} seconds...`);
     await new Promise((resolve) => setTimeout(resolve, CHECK_INTERVAL * 1000));
   }
 }
 
-main();
+// Start the application
+if (process.env.RUN_ONCE === "true") {
+  (async () => {
+    await refreshAuth();
+    await checkForNewCampaigns(false);
+    process.exit(0);
+  })();
+} else {
+  startMonitor();
+}
