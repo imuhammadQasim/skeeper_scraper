@@ -7,9 +7,29 @@ import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
 dotenv.config();
 
 // Configuration
+function getRandomInt(min, max) {
+  min = Math.ceil(min);
+  max = Math.floor(max);
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.3; rv:122.0) Gecko/20100101 Firefox/122.0",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+];
+
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
 const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/en";
-const CHECK_INTERVAL = 30; // 120 seconds as requested
+const MIN_CHECK_INTERVAL = 45; // seconds
+const MAX_CHECK_INTERVAL = 120; // seconds
 const AUTH_FILE = "auth.json";
 
 const SKEEPERS_EMAIL = process.env.SKEEPERS_EMAIL;
@@ -63,8 +83,7 @@ async function refreshAuth() {
         "Content-Type": "application/json",
         Origin: "https://creator.im.skeepers.io",
         Referer: "https://creator.im.skeepers.io/",
-        "User-Agent":
-          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": getRandomUserAgent(),
         "Cache-Control": "no-cache",
         Pragma: "no-cache",
       };
@@ -85,8 +104,7 @@ async function refreshAuth() {
           Accept: "application/json",
           Origin: "https://creator.im.skeepers.io",
           Referer: "https://creator.im.skeepers.io/",
-          "User-Agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+          "User-Agent": getRandomUserAgent(),
         };
         console.log("Token found in cookies successfully.");
       } else {
@@ -138,6 +156,13 @@ async function fetchCampaignPage(pageNumber) {
 }
 
 /**
+ * Helper for sleep
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
  * Fetch campaigns from multiple pages
  */
 async function fetchAllCampaigns() {
@@ -147,6 +172,12 @@ async function fetchAllCampaigns() {
   for (let page = 1; page <= 7; page++) {
     const campaigns = await fetchCampaignPage(page);
     allCampaigns = allCampaigns.concat(campaigns);
+
+    // Add random delay between page fetches (2-5 seconds)
+    if (page < 7) {
+      const pageDelay = getRandomInt(2, 5);
+      await sleep(pageDelay * 1000);
+    }
   }
   console.log(`Found ${allCampaigns.length} campaigns across pages`);
   return allCampaigns;
@@ -261,7 +292,7 @@ async function startMonitor() {
         const seenCampaigns = await loadSeenCampaigns();
         await sendHeartbeat({
           totalItems: seenCampaigns.length,
-          interval: CHECK_INTERVAL,
+          interval: `${MIN_CHECK_INTERVAL}-${MAX_CHECK_INTERVAL}`,
           scrapeCount: scrapeCount,
         });
         lastHeartbeat = now;
@@ -271,8 +302,9 @@ async function startMonitor() {
       console.error("Error in monitor cycle:", err);
     }
 
-    console.log(`Waiting ${CHECK_INTERVAL} seconds...`);
-    await new Promise((resolve) => setTimeout(resolve, CHECK_INTERVAL * 1000));
+    const currentWait = getRandomInt(MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL);
+    console.log(`Waiting ${currentWait} seconds for next cycle...`);
+    await new Promise((resolve) => setTimeout(resolve, currentWait * 1000));
   }
 }
 
