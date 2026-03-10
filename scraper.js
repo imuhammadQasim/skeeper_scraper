@@ -201,7 +201,7 @@ function isCampaignAvailable(campaign) {
 /**
  * Process campaigns and notify for new ones
  */
-async function checkForNewCampaigns(isBootstrap = false) {
+async function checkForNewCampaigns() {
   try {
     const campaigns = await fetchAllCampaigns();
     let seenCampaigns = await loadSeenCampaigns();
@@ -213,8 +213,11 @@ async function checkForNewCampaigns(isBootstrap = false) {
       const title = attrs.title || "Unknown Campaign";
       const storeName = attrs.store?.display_name || attrs.store?.name || "";
       const productInfo = storeName ? `${title} - ${storeName}` : title;
-      const webPath = campaign.web_path || attrs.web_path;
-      const fullLink = `https://app.im.skeepers.io${webPath}`;
+      const webPath = campaign.web_path || attrs.web_path || "";
+      const cleanPath = webPath.startsWith("/creators")
+        ? webPath.replace("/creators", "")
+        : webPath;
+      const fullLink = `https://creator.im.skeepers.io${cleanPath}`;
 
       if (seenCampaigns.includes(campaignId)) {
         // Already seen, skip duplicate notification
@@ -222,20 +225,18 @@ async function checkForNewCampaigns(isBootstrap = false) {
       }
 
       // NEW campaign detected
-      if (!isBootstrap) {
-        if (isCampaignAvailable(campaign)) {
-          console.log(`✨ New campaign detected: ${productInfo}`);
-          await notifyNewProduct(productInfo, fullLink);
-        } else {
-          const reason = attrs.sold_out
-            ? "sold out"
-            : attrs.status === "closed" || attrs.closed
-              ? "closed"
-              : "unavailable";
-          console.log(
-            `⏭️  New campaign detected: ${productInfo} (Skipping: ${reason})`,
-          );
-        }
+      if (isCampaignAvailable(campaign)) {
+        console.log(`✨ New available campaign detected: ${productInfo}`);
+        await notifyNewProduct(productInfo, fullLink);
+      } else {
+        const reason = attrs.sold_out
+          ? "sold out"
+          : attrs.status === "closed" || attrs.closed
+            ? "closed"
+            : "unavailable";
+        console.log(
+          `⏭️  New campaign detected: ${productInfo} (Skipping: ${reason})`,
+        );
       }
 
       // Add to cache
@@ -245,12 +246,6 @@ async function checkForNewCampaigns(isBootstrap = false) {
 
     if (newlySeenCount > 0) {
       await saveSeenCampaigns(seenCampaigns);
-    }
-
-    if (isBootstrap) {
-      console.log(
-        `Bootstrap completed. Processed ${newlySeenCount} campaigns.`,
-      );
     }
   } catch (error) {
     console.error("Error in checkForNewCampaigns:", error);
@@ -271,10 +266,6 @@ async function startMonitor() {
   // Initial auth
   await refreshAuth();
 
-  // 5 Bootstrap step: load existing campaigns without sending alerts
-  console.log("Bootstrapping existing campaigns...");
-  await checkForNewCampaigns(true);
-
   let lastHeartbeat = Date.now();
   let scrapeCount = 0;
   const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
@@ -282,7 +273,7 @@ async function startMonitor() {
   // 6 Monitoring loop
   while (true) {
     try {
-      await checkForNewCampaigns(false);
+      await checkForNewCampaigns();
       scrapeCount++;
 
       // Heartbeat logic
@@ -312,7 +303,7 @@ async function startMonitor() {
 if (process.env.RUN_ONCE === "true") {
   (async () => {
     await refreshAuth();
-    await checkForNewCampaigns(false);
+    await checkForNewCampaigns();
     process.exit(0);
   })();
 } else {
