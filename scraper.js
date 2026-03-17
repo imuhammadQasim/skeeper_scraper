@@ -183,20 +183,21 @@ async function fetchAllCampaigns() {
   return allCampaigns;
 }
 
+/*
 /**
  * Check if a campaign is available (not sold out and not closed)
- */
-function isCampaignAvailable(campaign) {
-  const attrs = campaign.attributes || campaign; // Handle different response formats if needed
+//  */
+// function isCampaignAvailable(campaign) {
+//   const attrs = campaign.attributes || campaign; // Handle different response formats if needed
 
-  // A campaign is available when: sold_out === false, closed === false, status !== "closed"
-  const isAvailable =
-    attrs.sold_out === false &&
-    attrs.closed === false &&
-    attrs.status !== "closed";
+//   // A campaign is available when: closed === false, status !== "closed"
+//   const isAvailable =
+//     attrs.closed === false &&
+//     attrs.status !== "closed";
 
-  return isAvailable;
-}
+//   return isAvailable;
+// }
+// */
 
 /**
  * Process campaigns and notify for new ones
@@ -225,6 +226,7 @@ async function checkForNewCampaigns() {
       }
 
       // NEW campaign detected
+      /*
       if (isCampaignAvailable(campaign)) {
         console.log(`✨ New available campaign detected: ${productInfo}`);
         await notifyNewProduct(productInfo, fullLink);
@@ -238,6 +240,9 @@ async function checkForNewCampaigns() {
           `⏭️  New campaign detected: ${productInfo} (Skipping: ${reason})`,
         );
       }
+      */
+      console.log(`✨ New campaign detected: ${productInfo}`);
+      await notifyNewProduct(productInfo, fullLink);
 
       // Add to cache
       seenCampaigns.push(campaignId);
