@@ -27,7 +27,8 @@ function getRandomUserAgent() {
 }
 
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
-const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/en";
+const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
+const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
 const MIN_CHECK_INTERVAL = 45; // seconds
 const MAX_CHECK_INTERVAL = 120; // seconds
 const AUTH_FILE = "auth.json";
@@ -211,6 +212,17 @@ async function checkForNewCampaigns() {
     for (const campaign of campaigns) {
       const campaignId = campaign.id;
       const attrs = campaign.attributes || campaign;
+      const countryCode = attrs.store?.country_code || "";
+
+      // Region Filter: Only process products from the target region (e.g., France)
+      const target = (TARGET_REGION || "FR").toUpperCase();
+      const currentCountry = (countryCode || "").toUpperCase();
+
+      if (target && currentCountry !== target) {
+        // Skip products that are not from the target region
+        continue;
+      }
+
       const title = attrs.title || "Unknown Campaign";
       const storeName = attrs.store?.display_name || attrs.store?.name || "";
       const productInfo = storeName ? `${title} - ${storeName}` : title;
@@ -242,6 +254,7 @@ async function checkForNewCampaigns() {
       }
       */
       console.log(`✨ New campaign detected: ${productInfo}`);
+      console.log("Full Campaign details:", JSON.stringify(campaign, null, 2));
       await notifyNewProduct(productInfo, fullLink);
 
       // Add to cache
