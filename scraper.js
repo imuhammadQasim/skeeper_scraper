@@ -253,8 +253,7 @@ async function checkForNewCampaigns() {
         );
       }
       */
-      console.log(`✨ New campaign detected: ${productInfo}`);
-      console.log("Full Campaign details:", JSON.stringify(campaign, null, 2));
+      console.log(`✨ New campaign detected [${currentCountry}]: ${productInfo}`);
       await notifyNewProduct(productInfo, fullLink);
 
       // Add to cache
