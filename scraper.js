@@ -29,8 +29,8 @@ function getRandomUserAgent() {
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
 const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
 const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
-const MIN_CHECK_INTERVAL = 45; // seconds
-const MAX_CHECK_INTERVAL = 120; // seconds
+const MIN_CHECK_INTERVAL = 20; // seconds
+const MAX_CHECK_INTERVAL = 40; // seconds
 const AUTH_FILE = "auth.json";
 
 const SKEEPERS_EMAIL = process.env.SKEEPERS_EMAIL;
@@ -164,104 +164,81 @@ function sleep(ms) {
 }
 
 /**
- * Fetch campaigns from multiple pages
+ * Process a list of campaigns and notify for new ones
+ * @returns {number} Number of new campaigns found
  */
-async function fetchAllCampaigns() {
-  console.log("Checking campaigns...");
-  let allCampaigns = [];
-  // Fetch campaigns from pages 1 to 7 to cover ~60 products
-  for (let page = 1; page <= 7; page++) {
-    const campaigns = await fetchCampaignPage(page);
-    allCampaigns = allCampaigns.concat(campaigns);
+async function processCampaigns(campaigns, seenCampaigns) {
+  let newlySeenCount = 0;
+  const target = (TARGET_REGION || "FR").toUpperCase();
 
-    // Add random delay between page fetches (2-5 seconds)
-    if (page < 7) {
-      const pageDelay = getRandomInt(2, 5);
-      await sleep(pageDelay * 1000);
+  for (const campaign of campaigns) {
+    const campaignId = campaign.id;
+    const attrs = campaign.attributes || campaign;
+    const countryCode = attrs.store?.country_code || "";
+    const currentCountry = (countryCode || "").toUpperCase();
+
+    // Region Filter
+    if (target && currentCountry !== target) {
+      continue;
     }
+
+    // Skip if already seen
+    if (seenCampaigns.includes(campaignId)) {
+      continue;
+    }
+
+    const title = attrs.title || "Unknown Campaign";
+    const storeName = attrs.store?.display_name || attrs.store?.name || "";
+    const productInfo = storeName ? `${title} - ${storeName}` : title;
+    
+    const webPath = campaign.web_path || attrs.web_path || "";
+    const cleanPath = webPath.startsWith("/creators")
+      ? webPath.replace("/creators", "")
+      : webPath;
+    const fullLink = `https://creator.im.skeepers.io${cleanPath}`;
+
+    const photoUrl = attrs.photo_urls?.medium || attrs.photo_urls?.large || attrs.photo_urls?.small || "";
+
+    console.log(`✨ New campaign detected [${currentCountry}]: ${productInfo}`);
+    
+    // Fire notification immediately for all new items
+    notifyNewProduct(productInfo, fullLink, photoUrl).catch(err => console.error("Notification error:", err));
+
+    seenCampaigns.push(campaignId);
+    newlySeenCount++;
   }
-  console.log(`Found ${allCampaigns.length} campaigns across pages`);
-  return allCampaigns;
+  return newlySeenCount;
 }
 
-/*
 /**
- * Check if a campaign is available (not sold out and not closed)
-//  */
-// function isCampaignAvailable(campaign) {
-//   const attrs = campaign.attributes || campaign; // Handle different response formats if needed
-
-//   // A campaign is available when: closed === false, status !== "closed"
-//   const isAvailable =
-//     attrs.closed === false &&
-//     attrs.status !== "closed";
-
-//   return isAvailable;
-// }
-// */
-
-/**
- * Process campaigns and notify for new ones
+ * Main check logic: Fetch and process page by page for maximum speed
  */
 async function checkForNewCampaigns() {
   try {
-    const campaigns = await fetchAllCampaigns();
+    console.log("Checking campaigns (page by page)...");
     let seenCampaigns = await loadSeenCampaigns();
-    let newlySeenCount = 0;
+    let totalNewlySeen = 0;
 
-    for (const campaign of campaigns) {
-      const campaignId = campaign.id;
-      const attrs = campaign.attributes || campaign;
-      const countryCode = attrs.store?.country_code || "";
+    // Fetch campaigns page by page. Most new items are on page 1.
+    for (let page = 1; page <= 7; page++) {
+      const campaigns = await fetchCampaignPage(page);
+      
+      if (!campaigns || campaigns.length === 0) break;
+      
+      const newlySeenOnThisPage = await processCampaigns(campaigns, seenCampaigns);
+      totalNewlySeen += newlySeenOnThisPage;
 
-      // Region Filter: Only process products from the target region (e.g., France)
-      const target = (TARGET_REGION || "FR").toUpperCase();
-      const currentCountry = (countryCode || "").toUpperCase();
-
-      if (target && currentCountry !== target) {
-        // Skip products that are not from the target region
-        continue;
+      // If we found new items on page 1, we definitely want to check further pages.
+      // If we are on later pages and find nothing new for a while, we could potentially stop early.
+      
+      if (page < 7) {
+        // Shorter delay between pages than before (1-2 seconds)
+        const pageDelay = getRandomInt(1, 2);
+        await sleep(pageDelay * 1000);
       }
-
-      const title = attrs.title || "Unknown Campaign";
-      const storeName = attrs.store?.display_name || attrs.store?.name || "";
-      const productInfo = storeName ? `${title} - ${storeName}` : title;
-      const webPath = campaign.web_path || attrs.web_path || "";
-      const cleanPath = webPath.startsWith("/creators")
-        ? webPath.replace("/creators", "")
-        : webPath;
-      const fullLink = `https://creator.im.skeepers.io${cleanPath}`;
-
-      if (seenCampaigns.includes(campaignId)) {
-        // Already seen, skip duplicate notification
-        continue;
-      }
-
-      // NEW campaign detected
-      /*
-      if (isCampaignAvailable(campaign)) {
-        console.log(`✨ New available campaign detected: ${productInfo}`);
-        await notifyNewProduct(productInfo, fullLink);
-      } else {
-        const reason = attrs.sold_out
-          ? "sold out"
-          : attrs.status === "closed" || attrs.closed
-            ? "closed"
-            : "unavailable";
-        console.log(
-          `⏭️  New campaign detected: ${productInfo} (Skipping: ${reason})`,
-        );
-      }
-      */
-      console.log(`✨ New campaign detected [${currentCountry}]: ${productInfo}`);
-      await notifyNewProduct(productInfo, fullLink);
-
-      // Add to cache
-      seenCampaigns.push(campaignId);
-      newlySeenCount++;
     }
 
-    if (newlySeenCount > 0) {
+    if (totalNewlySeen > 0) {
       await saveSeenCampaigns(seenCampaigns);
     }
   } catch (error) {

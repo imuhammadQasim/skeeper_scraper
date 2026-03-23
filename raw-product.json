@@ -1,0 +1,118 @@
+{
+  "id": "hd8r7",
+  "type": "Campaign",
+  "title": "Faites de chaque gorgée un moment unique avec notre mug standard 🍵✨",
+  "subtitle": null,
+  "label": null,
+  "photo": "/campaign/119333/photo/8735f6df-7a92-4c9f-b491-b50cf62a0387.png",
+  "photo_urls": {
+    "small": "https://octoly.imgix.net/campaign/119333/photo/8735f6df-7a92-4c9f-b491-b50cf62a0387.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=crop&bg=FFFFFF&w=200&h=150&widths=%5B200%2C%20400%5D",
+    "medium": "https://octoly.imgix.net/campaign/119333/photo/8735f6df-7a92-4c9f-b491-b50cf62a0387.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=crop&bg=FFFFFF&w=400&h=300&widths=%5B400%2C%20800%5D",
+    "large": "https://octoly.imgix.net/campaign/119333/photo/8735f6df-7a92-4c9f-b491-b50cf62a0387.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=crop&bg=FFFFFF&w=800&h=600&widths=%5B800%2C%201600%5D"
+  },
+  "video_url": null,
+  "video_id": null,
+  "web_path": "/creators/campaigns/hd8r7",
+  "hashtags": [],
+  "mentions": [],
+  "dodont": {
+    "consumer_dos": [
+      "Décrivez le mug standard  avec vos propres mots",
+      "Dites comment était la processus de personnalisation",
+      "Ecrivez votre avis en 3 lignes maximum",
+      "Parler de la qualité du mug standard"
+    ],
+    "consumer_donts": [
+      "Ne pas parler des concurrents",
+      "Ne pas parler de l'emballage"
+    ],
+    "influencer_dos": [],
+    "influencer_donts": []
+  },
+  "moodboard_pictures": [],
+  "moodboard_paths": [],
+  "pre_approved": false,
+  "creator_platforms": [],
+  "has_promo_code": false,
+  "has_personalized_promo_codes": false,
+  "has_personalized_affiliate_links": false,
+  "affiliate_link": "",
+  "orders_count": null,
+  "ordered_orders_count": null,
+  "is_paid": false,
+  "is_accessible": true,
+  "platforms": [
+    "consumer"
+  ],
+  "sold_out": true,
+  "ordered": false,
+  "closed": true,
+  "delivery_type": "physical",
+  "assignment_of_rights": false,
+  "consumer_text_review_ftc_check": "ensure_ftc_terms",
+  "is_api_integration_reviews_only": false,
+  "api_integration_type": null,
+  "is_yotpo_reviews_only": false,
+  "contracts": [
+    {
+      "id": "heq65",
+      "type": "Contract",
+      "options": [
+        {
+          "id": "hfm8a",
+          "type": "Contract::Option",
+          "platform": "consumer",
+          "requested_reviews_count": 1,
+          "consumer_review_urls": [
+            {
+              "id": "hbf6f",
+              "type": "Consumer::ReviewUrl",
+              "url": "https://avis2.avis-verifies.com/leaveareview_v2.php?idWebsite=7084c7d7-aa5a-4634-7124-bb8c61ce8684",
+              "label": "Mug personnalisé",
+              "form_index": 0,
+              "review_type": "url",
+              "is_external_review_form": true,
+              "ask_photo": false,
+              "ftc_check": "ensure_ftc_terms"
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "status": "closed",
+  "share_link": "https://app.im.skeepers.io/c/hwivb/r/hc88e",
+  "coming_soon_accepted": false,
+  "copyrights_free": false,
+  "rules": [],
+  "coming_soon": false,
+  "reviewable_at": null,
+  "store": {
+    "id": "hasww",
+    "type": "Store",
+    "logo": "/store/5490/logo/6caaedb5-6168-4a67-babb-ac2eaee73397.png",
+    "logo_urls": {
+      "small": "https://octoly.imgix.net/store/5490/logo/6caaedb5-6168-4a67-babb-ac2eaee73397.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=fill&bg=FFFFFF&w=50&h=50&widths=%5B50%2C%20100%5D",
+      "medium": "https://octoly.imgix.net/store/5490/logo/6caaedb5-6168-4a67-babb-ac2eaee73397.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=fill&bg=FFFFFF&w=150&h=150&widths=%5B150%2C%20300%5D",
+      "large": "https://octoly.imgix.net/store/5490/logo/6caaedb5-6168-4a67-babb-ac2eaee73397.png?ixlib=rails-4.3.1&fm=jpg&q=90&fit=fill&bg=FFFFFF&w=300&h=300&widths=%5B300%2C%20600%5D"
+    },
+    "banner": "/store/5490/banner/c3404f54-486b-4dab-b02a-b95a9de0516c.png",
+    "title": "AgfaPhoto Print - Impression de photo sur tous supports",
+    "country_code": "FR",
+    "twitter": "",
+    "response_time": "56.7090652783018868",
+    "web_path": "/creators/stores/hasww",
+    "display_name": "AgfaPhoto Print",
+    "display_name_hashtag": "agfaphoto_print",
+    "name_signature": "agfaphotoprint",
+    "hashtag_signature": "agfaphotoprint",
+    "ftc_rules": true,
+    "ftc_check_level": "ftc_basic_check",
+    "locale": "fr-FR",
+    "currency": {
+      "iso_code": "EUR",
+      "symbol": "€"
+    },
+    "description": "<p>Profitez de plus de <strong>150 ans d'expérience</strong> dans le domaine de l'image !</p><p><strong>AgfaPhoto Print</strong> est le nouveau service d'impression en ligne de la marque iconique <strong>AgfaPhoto</strong>.</p><p>Imprimez vos plus beaux clichés sur des supports de haute qualité, que ce soit des tirages photo classiques, des livres photo, des posters ou encore des mugs.</p><p><strong>AgfaPhoto Print</strong> combine une expertise reconnue et des technologies de pointe pour assurer une qualité optimale.</p>"
+  }
+}

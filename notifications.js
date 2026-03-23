@@ -14,13 +14,16 @@ const {
   TELEGRAM_CHAT_ID,
 } = process.env;
 
-export async function sendEmailAlert(productName, productLink) {
-  if (!EMAIL_USER || !EMAIL_PASS || !EMAIL_RECEIVER) {
-    console.warn("Email configuration missing. Skipping email alert.");
-    return;
+let transporter = null;
+
+function getTransporter() {
+  if (transporter) return transporter;
+
+  if (!EMAIL_USER || !EMAIL_PASS) {
+    return null;
   }
 
-  const transporter = nodemailer.createTransport({
+  transporter = nodemailer.createTransport({
     host: SMTP_SERVER || "smtp.gmail.com",
     port: parseInt(SMTP_PORT) || 587,
     secure: false,
@@ -29,6 +32,15 @@ export async function sendEmailAlert(productName, productLink) {
       pass: EMAIL_PASS,
     },
   });
+  return transporter;
+}
+
+export async function sendEmailAlert(productName, productLink, productImage) {
+  const currentTransporter = getTransporter();
+  if (!currentTransporter || !EMAIL_RECEIVER) {
+    console.warn("Email configuration missing. Skipping email alert.");
+    return;
+  }
 
   const mailOptions = {
     from: `"Skeepers Monitor" <${EMAIL_USER}>`,
@@ -40,7 +52,14 @@ export async function sendEmailAlert(productName, productLink) {
           <h1 style="color: white; margin: 0; font-size: 24px;">New Campaign Detected</h1>
         </div>
         <div style="padding: 30px; background-color: #ffffff;">
-          <p style="color: #374151; font-size: 16px; line-height: 1.5; margin-bottom: 25px;">
+          ${
+            productImage
+              ? `<div style="text-align: center; margin-bottom: 25px;">
+                   <img src="${productImage}" alt="${productName}" style="max-width: 100%; height: auto; border-radius: 8px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                 </div>`
+              : ""
+          }
+          <p style="color: #374151; font-size: 16px; line-height: 1.5; margin-bottom: 25px; text-align: center;">
             A new product campaign has just been published on Skeepers. Check the details below to ensure you don't miss out.
           </p>
           <div style="background-color: #f9fafb; border-left: 4px solid #4f46e5; padding: 15px; margin-bottom: 30px;">
@@ -62,16 +81,16 @@ export async function sendEmailAlert(productName, productLink) {
   };
 
   try {
-    await transporter.sendMail(mailOptions);
+    await currentTransporter.sendMail(mailOptions);
     console.log(`Email alert sent for: ${productName}`);
   } catch (error) {
     console.error("Error sending email:", error);
   }
 }
 
-export async function sendTelegramAlert(productName, productLink) {
+export async function sendTelegramAlert(productName, productLink, productImage) {
   if (!TELEGRAM_BOT_TOKEN || !TELEGRAM_CHAT_ID) {
-    console.warn("Telegram configuration missing. Skipping Telegram alert.");
+    // console.warn("Telegram configuration missing. Skipping Telegram alert.");
     return;
   }
 
@@ -93,8 +112,12 @@ export async function sendTelegramAlert(productName, productLink) {
   }
 }
 
-export async function notifyNewProduct(productName, productLink) {
-  await sendEmailAlert(productName, productLink);
+export async function notifyNewProduct(productName, productLink, productImage) {
+  // Fire both in parallel for speed
+  await Promise.allSettled([
+    sendEmailAlert(productName, productLink, productImage),
+    sendTelegramAlert(productName, productLink, productImage),
+  ]);
 }
 
 export async function sendHeartbeat(stats) {
