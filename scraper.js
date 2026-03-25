@@ -190,19 +190,29 @@ async function processCampaigns(campaigns, seenCampaigns) {
     const title = attrs.title || "Unknown Campaign";
     const storeName = attrs.store?.display_name || attrs.store?.name || "";
     const productInfo = storeName ? `${title} - ${storeName}` : title;
-    
+
     const webPath = campaign.web_path || attrs.web_path || "";
     const cleanPath = webPath.startsWith("/creators")
       ? webPath.replace("/creators", "")
       : webPath;
     const fullLink = `https://creator.im.skeepers.io${cleanPath}`;
 
-    const photoUrl = attrs.photo_urls?.medium || attrs.photo_urls?.large || attrs.photo_urls?.small || "";
+    const photoUrl =
+      attrs.photo_urls?.medium ||
+      attrs.photo_urls?.large ||
+      attrs.photo_urls?.small ||
+      "";
+    const isSoldOut = attrs.sold_out === true;
+    const status = attrs.status || "active";
 
     console.log(`✨ New campaign detected [${currentCountry}]: ${productInfo}`);
-    
-    // Fire notification immediately for all new items
-    notifyNewProduct(productInfo, fullLink, photoUrl).catch(err => console.error("Notification error:", err));
+    console.log(`   └─ Status: ${status} | Sold Out: ${isSoldOut}`);
+
+    // Fire notification for ALL new items (including sold out) so user can track them
+    console.log(`   └─ 📧 Sending notification...`);
+    notifyNewProduct(productInfo, fullLink, photoUrl, status, isSoldOut).catch((err) =>
+      console.error("Notification error:", err),
+    );
 
     seenCampaigns.push(campaignId);
     newlySeenCount++;
@@ -222,15 +232,18 @@ async function checkForNewCampaigns() {
     // Fetch campaigns page by page. Most new items are on page 1.
     for (let page = 1; page <= 7; page++) {
       const campaigns = await fetchCampaignPage(page);
-      
+
       if (!campaigns || campaigns.length === 0) break;
-      
-      const newlySeenOnThisPage = await processCampaigns(campaigns, seenCampaigns);
+
+      const newlySeenOnThisPage = await processCampaigns(
+        campaigns,
+        seenCampaigns,
+      );
       totalNewlySeen += newlySeenOnThisPage;
 
       // If we found new items on page 1, we definitely want to check further pages.
       // If we are on later pages and find nothing new for a while, we could potentially stop early.
-      
+
       if (page < 7) {
         // Shorter delay between pages than before (1-2 seconds)
         const pageDelay = getRandomInt(1, 2);
