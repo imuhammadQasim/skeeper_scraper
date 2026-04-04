@@ -29,6 +29,12 @@ function getRandomUserAgent() {
   return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
 }
 
+function getTimestamp() {
+  const now = new Date();
+  const time = now.toLocaleTimeString("en-GB", { hour12: false });
+  return `[${time}]`;
+}
+
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
 const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
 const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
@@ -68,7 +74,7 @@ let globalMaxPages = 10; // Initial guess, will be updated from API meta
  * Perform login and extract necessary auth headers
  */
 async function refreshAuth() {
-  console.log("Refreshing authentication session...");
+  console.log(`${getTimestamp()} Refreshing authentication session...`);
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext();
   const page = await context.newPage();
@@ -78,7 +84,7 @@ async function refreshAuth() {
 
     // Check if we need to login
     if (page.url().includes("login") || page.url().includes("signin")) {
-      console.log("Automated login in progress...");
+      console.log(`${getTimestamp()} Automated login in progress...`);
       await page.fill('input[name="email"]', SKEEPERS_EMAIL);
       await page.fill('input[name="password"]', SKEEPERS_PASSWORD);
       await page.click('button[type="submit"]');
@@ -114,7 +120,9 @@ async function refreshAuth() {
         "Cache-Control": "no-cache",
         Pragma: "no-cache",
       };
-      console.log("Auth token extracted successfully and headers updated.");
+      console.log(
+        `${getTimestamp()} Auth token extracted successfully and headers updated.`,
+      );
     } else {
       // Fallback: try to find it in cookies
       const cookies = await context.cookies();
@@ -133,7 +141,7 @@ async function refreshAuth() {
           Referer: "https://creator.im.skeepers.io/",
           "User-Agent": getRandomUserAgent(),
         };
-        console.log("Token found in cookies successfully.");
+        console.log(`${getTimestamp()} Token found in cookies successfully.`);
       } else {
         console.warn("Could not find auth token in localStorage or cookies.");
       }
@@ -183,12 +191,15 @@ async function fetchCampaignPage(pageNumber) {
       error.response &&
       (error.response.status === 401 || error.response.status === 403)
     ) {
-      console.log("Session expired. Refreshing auth...");
+      console.log(`${getTimestamp()} Session expired. Refreshing auth...`);
       await refreshAuth();
       // Retry once after refresh
       return await fetchCampaignPage(pageNumber);
     }
-    console.error(`Error fetching page ${pageNumber}:`, error.message);
+    console.error(
+      `${getTimestamp()} Error fetching page ${pageNumber}:`,
+      error.message,
+    );
     return [];
   }
 }
@@ -242,13 +253,15 @@ async function processCampaigns(campaigns, seenCampaigns) {
     const isSoldOut = attrs.sold_out === true;
     const status = attrs.status || "active";
 
-    console.log(`✨ New campaign detected [${currentCountry}]: ${productInfo}`);
-    console.log(`   └─ Status: ${status} | Sold Out: ${isSoldOut}`);
+    console.log(
+      `${getTimestamp()} ✨ New campaign detected [${currentCountry}]: ${productInfo}`,
+    );
+    console.log(`           └─ Status: ${status} | Sold Out: ${isSoldOut}`);
 
     // Fire notification for ALL new items (including sold out) so user can track them
-    console.log(`   └─ 📧 Sending notification...`);
+    console.log(`           └─ 📧 Sending notification...`);
     notifyNewProduct(productInfo, fullLink, photoUrl, status, isSoldOut).catch(
-      (err) => console.error("Notification error:", err),
+      (err) => console.error(`${getTimestamp()} Notification error:`, err),
     );
 
     seenCampaigns.push(campaignId);
@@ -263,7 +276,9 @@ async function processCampaigns(campaigns, seenCampaigns) {
  */
 async function checkForNewCampaigns(maxPage = 1) {
   try {
-    console.log(`Checking campaigns (depth: ${maxPage} page[s])...`);
+    console.log(
+      `${getTimestamp()} Checking campaigns (depth: ${maxPage} page[s])...`,
+    );
 
     // Load from disk only once at startup
     if (!isSeenCampaignsLoaded) {
@@ -310,7 +325,7 @@ async function checkForNewCampaigns(maxPage = 1) {
 
     return totalNewlySeen;
   } catch (error) {
-    console.error("Error in checkForNewCampaigns:", error);
+    console.error(`${getTimestamp()} Error in checkForNewCampaigns:`, error);
     return 0;
   }
 }
@@ -319,10 +334,12 @@ async function checkForNewCampaigns(maxPage = 1) {
  * Main monitoring loop
  */
 async function startMonitor() {
-  console.log("--- Skeepers API Monitor Started ---");
+  console.log(`${getTimestamp()} --- Skeepers API Monitor Started ---`);
 
   if (!SKEEPERS_EMAIL || !SKEEPERS_PASSWORD) {
-    console.error("ERROR: SKEEPERS_EMAIL or SKEEPERS_PASSWORD not set in .env");
+    console.error(
+      `${getTimestamp()} ERROR: SKEEPERS_EMAIL or SKEEPERS_PASSWORD not set in .env`,
+    );
     process.exit(1);
   }
 
@@ -344,9 +361,9 @@ async function startMonitor() {
 
       if (dayOfWeek === 0 || dayOfWeek === 6) {
         console.log(
-          `📅 [FRANCE TIME] It is ${dayOfWeek === 0 ? "Sunday" : "Saturday"}. Scraper is in Sleep Mode (Weekend).`,
+          `${getTimestamp()} 📅 [FRANCE TIME] It is ${dayOfWeek === 0 ? "Sunday" : "Saturday"}. Scraper is in Sleep Mode (Weekend).`,
         );
-        console.log("Waiting 1 hour before next check...");
+        console.log(`${getTimestamp()} Waiting 1 hour before next check...`);
         await new Promise((resolve) => setTimeout(resolve, 3600 * 1000));
         continue;
       }
@@ -358,10 +375,12 @@ async function startMonitor() {
       const pageDepth = isDeepCheck ? 5 : 2;
 
       if (isDeepCheck) {
-        console.log("=== Running DEEP SCAN (5 pages) ===");
+        console.log(`${getTimestamp()} === Running DEEP SCAN (5 pages) ===`);
       } else {
-        console.log(`=== Fast Scan (2 pages, size 40) ===`);
+        console.log(`${getTimestamp()} === Fast Scan (2 pages, size 40) ===`);
       }
+      // wait for 2 seconds to make logs cleaner
+      await sleep(1000);
 
       await checkForNewCampaigns(pageDepth);
 
@@ -373,7 +392,7 @@ async function startMonitor() {
       // Heartbeat logic
       const now = Date.now();
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
-        console.log("Sending daily heartbeat...");
+        console.log(`${getTimestamp()} Sending daily heartbeat...`);
         const seenCampaigns = await loadSeenCampaigns();
         await sendHeartbeat({
           totalItems: seenCampaigns.length,
@@ -384,12 +403,12 @@ async function startMonitor() {
         scrapeCount = 0;
       }
     } catch (err) {
-      console.error("Error in monitor cycle:", err);
+      console.error(`${getTimestamp()} Error in monitor cycle:`, err);
     }
 
     const currentWait = getRandomInt(MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL);
     console.log(
-      `Cycle ${runIndex} finished. Waiting ${currentWait}s for next check...`,
+      `${getTimestamp()} Cycle ${runIndex} finished. Waiting ${currentWait}s for next check...`,
     );
     await new Promise((resolve) => setTimeout(resolve, currentWait * 1000));
   }
