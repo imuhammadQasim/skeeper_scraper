@@ -30,9 +30,21 @@ function getRandomUserAgent() {
 }
 
 function getTimestamp() {
-  const now = new Date();
-  const time = now.toLocaleTimeString("en-GB", { hour12: false });
-  return `[${time}]`;
+  const options = {
+    timeZone: "Europe/Paris",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  };
+  // Format: "DD/MM HH:mm:ss" in France timezone
+  const string = new Date()
+    .toLocaleString("en-GB", options)
+    .replace(",", "")
+    .replace(/\//g, "-");
+  return `[${string}]`;
 }
 
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
@@ -256,10 +268,12 @@ async function processCampaigns(campaigns, seenCampaigns) {
     console.log(
       `${getTimestamp()} ✨ New campaign detected [${currentCountry}]: ${productInfo}`,
     );
-    console.log(`           └─ Status: ${status} | Sold Out: ${isSoldOut}`);
+    console.log(
+      `                   └─ Status: ${status} | Sold Out: ${isSoldOut}`,
+    );
 
     // Fire notification for ALL new items (including sold out) so user can track them
-    console.log(`           └─ 📧 Sending notification...`);
+    console.log(`                   └─ 📧 Sending notification...`);
     notifyNewProduct(productInfo, fullLink, photoUrl, status, isSoldOut).catch(
       (err) => console.error(`${getTimestamp()} Notification error:`, err),
     );
