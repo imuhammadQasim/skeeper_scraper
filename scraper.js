@@ -6,7 +6,6 @@ import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
 import http from "http";
 import https from "https";
 
-
 dotenv.config();
 
 // Configuration
@@ -52,8 +51,10 @@ const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
 const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
 const MIN_CHECK_INTERVAL = 5; // seconds
 const MAX_CHECK_INTERVAL = 10; // seconds
-const DEEP_CHECK_AFTER_RUNS = 3; // Even more frequent deep scans
-
+const FAST_SCAN_PAGE_DEPTH = 5; // Check first 5 pages during normal cycles
+const DEEP_SCAN_PAGE_DEPTH = 10; // Check first 10 pages during deeper cycles
+const DEEP_CHECK_AFTER_RUNS = 3; // Every 3rd cycle uses a deeper scan
+const FORCE_DEEP_SCAN = process.env.FORCE_DEEP_SCAN === "true";
 
 const AUTH_FILE = "auth.json";
 
@@ -74,13 +75,11 @@ const axiosInstance = axios.create({
 
 // Cache for seen campaigns to avoid file I/O on every cycle
 let cachedSeenCampaigns = [];
+let cachedSeenCampaignIds = new Set();
 let isSeenCampaignsLoaded = false;
 
 // Global tracker for available pages to avoid hitting empty pages
 let globalMaxPages = 10; // Initial guess, will be updated from API meta
-
-
-
 
 /**
  * Perform login and extract necessary auth headers
@@ -198,7 +197,6 @@ async function fetchCampaignPage(pageNumber) {
 
     return response.data?.data || response.data || [];
   } catch (error) {
-
     if (
       error.response &&
       (error.response.status === 401 || error.response.status === 403)
@@ -227,12 +225,12 @@ function sleep(ms) {
  * Process a list of campaigns and notify for new ones
  * @returns {number} Number of new campaigns found
  */
-async function processCampaigns(campaigns, seenCampaigns) {
+async function processCampaigns(campaigns, seenCampaigns, seenCampaignIds) {
   let newlySeenCount = 0;
   const target = (TARGET_REGION || "FR").toUpperCase();
 
   for (const campaign of campaigns) {
-    const campaignId = campaign.id;
+    const campaignId = String(campaign.id);
     const attrs = campaign.attributes || campaign;
     const countryCode = attrs.store?.country_code || "";
     const currentCountry = (countryCode || "").toUpperCase();
@@ -243,7 +241,7 @@ async function processCampaigns(campaigns, seenCampaigns) {
     }
 
     // Skip if already seen
-    if (seenCampaigns.includes(campaignId)) {
+    if (seenCampaignIds.has(campaignId)) {
       continue;
     }
 
@@ -279,6 +277,7 @@ async function processCampaigns(campaigns, seenCampaigns) {
     );
 
     seenCampaigns.push(campaignId);
+    seenCampaignIds.add(campaignId);
     newlySeenCount++;
   }
   return newlySeenCount;
@@ -297,17 +296,24 @@ async function checkForNewCampaigns(maxPage = 1) {
     // Load from disk only once at startup
     if (!isSeenCampaignsLoaded) {
       cachedSeenCampaigns = await loadSeenCampaigns();
+      cachedSeenCampaignIds = new Set(cachedSeenCampaigns.map(String));
       isSeenCampaignsLoaded = true;
     }
 
     let totalNewlySeen = 0;
 
-
     // Define the helper first
     const checkPage = async (p) => {
       const campaigns = await fetchCampaignPage(p);
+      console.log(
+        `${getTimestamp()} Page ${p} fetched ${campaigns.length} campaign(s).`,
+      );
       if (campaigns && campaigns.length > 0) {
-        return await processCampaigns(campaigns, cachedSeenCampaigns);
+        return await processCampaigns(
+          campaigns,
+          cachedSeenCampaigns,
+          cachedSeenCampaignIds,
+        );
       }
       return 0;
     };
@@ -319,7 +325,6 @@ async function checkForNewCampaigns(maxPage = 1) {
       { length: effectiveMaxPage },
       (_, i) => i + 1,
     );
-
 
     // If we only have 1 page, run it normally
     if (maxPage === 1) {
@@ -335,7 +340,6 @@ async function checkForNewCampaigns(maxPage = 1) {
     if (totalNewlySeen > 0) {
       await saveSeenCampaigns(cachedSeenCampaigns);
     }
-
 
     return totalNewlySeen;
   } catch (error) {
@@ -383,15 +387,26 @@ async function startMonitor() {
       }
 
       runIndex++;
-      // Fast check: Now scanning Page 1 & 2 in parallel every time for safety
-      // Deep check: Scans Page 1 to 5 every few runs
-      const isDeepCheck = runIndex % DEEP_CHECK_AFTER_RUNS === 0;
-      const pageDepth = isDeepCheck ? 5 : 2;
+      // Fast check: scan multiple pages every cycle for earlier detection
+      // Deep check: scan even more pages every few runs
+      const isDeepCheck =
+        FORCE_DEEP_SCAN || runIndex % DEEP_CHECK_AFTER_RUNS === 0;
+      const pageDepth = isDeepCheck
+        ? DEEP_SCAN_PAGE_DEPTH
+        : FAST_SCAN_PAGE_DEPTH;
 
-      if (isDeepCheck) {
-        console.log(`${getTimestamp()} === Running DEEP SCAN (5 pages) ===`);
+      if (FORCE_DEEP_SCAN) {
+        console.log(
+          `${getTimestamp()} === FORCE DEEP SCAN enabled: scanning ${pageDepth} pages every cycle ===`,
+        );
+      } else if (isDeepCheck) {
+        console.log(
+          `${getTimestamp()} === Running DEEP SCAN (${pageDepth} pages) ===`,
+        );
       } else {
-        console.log(`${getTimestamp()} === Fast Scan (2 pages, size 40) ===`);
+        console.log(
+          `${getTimestamp()} === Fast Scan (${pageDepth} pages, size 40) ===`,
+        );
       }
       // wait for 2 seconds to make logs cleaner
       await sleep(1000);
