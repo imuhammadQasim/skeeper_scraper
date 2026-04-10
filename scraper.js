@@ -1,7 +1,7 @@
 import axios from "axios";
 import dotenv from "dotenv";
 import { chromium } from "playwright";
-import { loadSeenCampaigns, saveSeenCampaigns } from "./storage.js";
+import { loadSeenCampaigns, saveSeenCampaigns, logDetectionDebug } from "./storage.js";
 import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
 import http from "http";
 import https from "https";
@@ -49,11 +49,10 @@ function getTimestamp() {
 const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
 const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
 const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
-const MIN_CHECK_INTERVAL = 5; // seconds
-const MAX_CHECK_INTERVAL = 10; // seconds
-const FAST_SCAN_PAGE_DEPTH = 5; // Check first 5 pages during normal cycles
-const DEEP_SCAN_PAGE_DEPTH = 10; // Check first 10 pages during deeper cycles
-const DEEP_CHECK_AFTER_RUNS = 3; // Every 3rd cycle uses a deeper scan
+const CHECK_INTERVAL = 2; // Fixed 2-second interval for max speed
+const FAST_SCAN_PAGE_DEPTH = 20; // Scan deeper by default (Early Exit ensures efficiency)
+const DEEP_SCAN_PAGE_DEPTH = 50; // Periodically scan very deep
+const DEEP_CHECK_AFTER_RUNS = 10; // Every 10th cycle uses a deeper scan
 const FORCE_DEEP_SCAN = process.env.FORCE_DEEP_SCAN === "true";
 
 const AUTH_FILE = "auth.json";
@@ -225,7 +224,12 @@ function sleep(ms) {
  * Process a list of campaigns and notify for new ones
  * @returns {number} Number of new campaigns found
  */
-async function processCampaigns(campaigns, seenCampaigns, seenCampaignIds) {
+async function processCampaigns(
+  campaigns,
+  seenCampaigns,
+  seenCampaignIds,
+  pageNumber = 1,
+) {
   let newlySeenCount = 0;
   const target = (TARGET_REGION || "FR").toUpperCase();
 
@@ -235,13 +239,19 @@ async function processCampaigns(campaigns, seenCampaigns, seenCampaignIds) {
     const countryCode = attrs.store?.country_code || "";
     const currentCountry = (countryCode || "").toUpperCase();
 
-    // Region Filter
-    if (target && currentCountry !== target) {
+    // Mark as seen immediately regardless of region filter
+    // This allows us to know we've already scanned this item globally
+    if (!seenCampaignIds.has(campaignId)) {
+      seenCampaigns.push(campaignId);
+      seenCampaignIds.add(campaignId);
+    } else {
+      // If we already had it in our memory Set, it's not "newly seen" in this run
+      // This part is mostly for safety as the caller usually checks this
       continue;
     }
 
-    // Skip if already seen
-    if (seenCampaignIds.has(campaignId)) {
+    // Region Filter for notifications
+    if (target && currentCountry !== target) {
       continue;
     }
 
@@ -260,14 +270,34 @@ async function processCampaigns(campaigns, seenCampaigns, seenCampaignIds) {
       attrs.photo_urls?.large ||
       attrs.photo_urls?.small ||
       "";
+
     const isSoldOut = attrs.sold_out === true;
     const status = attrs.status || "active";
+
+    // Autonomous Debug Logging (Lag Calculation)
+    const publishedAt =
+      attrs.last_published_at || attrs.published_at || attrs.created_at;
+    let lagSeconds = "Unknown";
+    if (publishedAt) {
+      const pubTime = new Date(publishedAt).getTime();
+      const nowTime = Date.now();
+      lagSeconds = Math.round((nowTime - pubTime) / 1000);
+    }
+
+    logDetectionDebug({
+      id: campaignId,
+      name: productInfo,
+      status: status,
+      soldOut: isSoldOut,
+      lag: lagSeconds,
+      page: pageNumber,
+    });
 
     console.log(
       `${getTimestamp()} ✨ New campaign detected [${currentCountry}]: ${productInfo}`,
     );
     console.log(
-      `                   └─ Status: ${status} | Sold Out: ${isSoldOut}`,
+      `                   └─ Status: ${status} | Sold Out: ${isSoldOut} | Lag: ${lagSeconds}s`,
     );
 
     // Fire notification for ALL new items (including sold out) so user can track them
@@ -276,8 +306,6 @@ async function processCampaigns(campaigns, seenCampaigns, seenCampaignIds) {
       (err) => console.error(`${getTimestamp()} Notification error:`, err),
     );
 
-    seenCampaigns.push(campaignId);
-    seenCampaignIds.add(campaignId);
     newlySeenCount++;
   }
   return newlySeenCount;
@@ -301,40 +329,57 @@ async function checkForNewCampaigns(maxPage = 1) {
     }
 
     let totalNewlySeen = 0;
+    let stopScan = false;
 
-    // Define the helper first
-    const checkPage = async (p) => {
+    // Respect the globalMaxPages reported by the API to never hit empty pages
+    const effectiveMaxPage = Math.min(maxPage, globalMaxPages);
+
+    // Use sequential fetching to avoid hitting extra pages
+    // Since items are sorted by date, as soon as we hit a 'seen' item, we can stop.
+    for (let p = 1; p <= effectiveMaxPage; p++) {
       const campaigns = await fetchCampaignPage(p);
       console.log(
         `${getTimestamp()} Page ${p} fetched ${campaigns.length} campaign(s).`,
       );
-      if (campaigns && campaigns.length > 0) {
-        return await processCampaigns(
-          campaigns,
+
+      if (!campaigns || campaigns.length === 0) break;
+
+      let pageNewlySeen = 0;
+      let alreadySeenOnThisPage = false;
+
+      for (const campaign of campaigns) {
+        const campaignId = String(campaign.id);
+
+        if (cachedSeenCampaignIds.has(campaignId)) {
+          // If we encounter an item we've already seen in a PREVIOUS run, 
+          // it means we've reached the boundary of new items.
+          alreadySeenOnThisPage = true;
+          break;
+        }
+
+        // Process this item (this adds it to global seen set and notifies if match)
+        const added = await processCampaigns(
+          [campaign],
           cachedSeenCampaigns,
           cachedSeenCampaignIds,
+          p,
         );
+        pageNewlySeen += added;
       }
-      return 0;
-    };
 
-    // Use parallel fetching with immediate processing
-    // Respect the globalMaxPages limit to avoid unnecessary hits
-    const effectiveMaxPage = Math.min(maxPage, globalMaxPages);
-    const pageNumbers = Array.from(
-      { length: effectiveMaxPage },
-      (_, i) => i + 1,
-    );
+      totalNewlySeen += pageNewlySeen;
 
-    // If we only have 1 page, run it normally
-    if (maxPage === 1) {
-      totalNewlySeen = await checkPage(1);
-    } else {
-      // For multiple pages, run in parallel and process immediately as they return
-      const results = await Promise.allSettled(pageNumbers.map(checkPage));
-      results.forEach((res) => {
-        if (res.status === "fulfilled") totalNewlySeen += res.value;
-      });
+      if (alreadySeenOnThisPage) {
+        console.log(`${getTimestamp()} Boundary of new campaigns reached on page ${p}. Stopping search.`);
+        stopScan = true;
+        break;
+      }
+
+      // If page is not full, it's the last page anyway
+      if (campaigns.length < 40) {
+        console.log(`${getTimestamp()} Reached the end of available campaigns.`);
+        break;
+      }
     }
 
     if (totalNewlySeen > 0) {
@@ -397,20 +442,17 @@ async function startMonitor() {
 
       if (FORCE_DEEP_SCAN) {
         console.log(
-          `${getTimestamp()} === FORCE DEEP SCAN enabled: scanning ${pageDepth} pages every cycle ===`,
+          `${getTimestamp()} === FORCE DEEP SCAN (Limit: ${pageDepth} pages) ===`,
         );
       } else if (isDeepCheck) {
         console.log(
-          `${getTimestamp()} === Running DEEP SCAN (${pageDepth} pages) ===`,
+          `${getTimestamp()} === Running DEEP SCAN (Limit: ${pageDepth} pages) ===`,
         );
       } else {
         console.log(
-          `${getTimestamp()} === Fast Scan (${pageDepth} pages, size 40) ===`,
+          `${getTimestamp()} === Scanning for new products (Limit: ${pageDepth} pages) ===`,
         );
       }
-      // wait for 2 seconds to make logs cleaner
-      await sleep(1000);
-
       await checkForNewCampaigns(pageDepth);
 
       scrapeCount++;
@@ -425,7 +467,7 @@ async function startMonitor() {
         const seenCampaigns = await loadSeenCampaigns();
         await sendHeartbeat({
           totalItems: seenCampaigns.length,
-          interval: `${MIN_CHECK_INTERVAL}-${MAX_CHECK_INTERVAL}`,
+          interval: `${CHECK_INTERVAL}`,
           scrapeCount: scrapeCount,
         });
         lastHeartbeat = now;
@@ -435,11 +477,10 @@ async function startMonitor() {
       console.error(`${getTimestamp()} Error in monitor cycle:`, err);
     }
 
-    const currentWait = getRandomInt(MIN_CHECK_INTERVAL, MAX_CHECK_INTERVAL);
     console.log(
-      `${getTimestamp()} Cycle ${runIndex} finished. Waiting ${currentWait}s for next check...`,
+      `${getTimestamp()} Cycle ${runIndex} finished. Waiting ${CHECK_INTERVAL}s for next check...`,
     );
-    await new Promise((resolve) => setTimeout(resolve, currentWait * 1000));
+    await new Promise((resolve) => setTimeout(resolve, CHECK_INTERVAL * 1000));
   }
 }
 

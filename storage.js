@@ -119,3 +119,19 @@ export function updateLastChecked(seenProducts) {
     lastChecked: now,
   }));
 }
+
+/**
+ * Append a detailed detection event to a debug log for future analysis
+ * @param {Object} event - Detailed event data
+ */
+export async function logDetectionDebug(event) {
+  try {
+    await ensureDataDir();
+    const logFile = `${DATA_DIR}/detection_debug.log`;
+    const timestamp = new Date().toISOString();
+    const entry = `[${timestamp}] ID: ${event.id} | Product: ${event.name} | Status: ${event.status} | SoldOut: ${event.soldOut} | Lag: ${event.lag}s | Page: ${event.page}\n`;
+    await fs.appendFile(logFile, entry);
+  } catch (error) {
+    console.error("Error writing to detection debug log:", error);
+  }
+}
