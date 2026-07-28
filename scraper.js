@@ -1,259 +1,496 @@
-import { chromium } from "playwright";
-import fs from "fs";
+import axios from "axios";
 import dotenv from "dotenv";
-import {
-  loadSeenProducts,
-  saveSeenProducts,
-  isNewProduct,
-  addProduct,
-  updateLastChecked,
-} from "./storage.js";
+import { chromium } from "playwright";
+import { loadSeenCampaigns, saveSeenCampaigns, logDetectionDebug } from "./storage.js";
 import { notifyNewProduct, sendHeartbeat } from "./notifications.js";
+import http from "http";
+import https from "https";
 
 dotenv.config();
 
 // Configuration
-const MONITOR_URL =
-  process.env.MONITOR_URL || "https://creator.im.skeepers.io/campaigns/search";
-const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/en";
-const CHECK_INTERVAL = parseInt(process.env.CHECK_INTERVAL) || 300;
-const HEADLESS = process.env.HEADLESS !== "false";
+function getRandomInt(min, max) {
+  min = Math.ceil(min);
+  max = Math.floor(max);
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+
+const USER_AGENTS = [
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
+  "Mozilla/5.0 (Macintosh; Intel Mac OS X 14.3; rv:122.0) Gecko/20100101 Firefox/122.0",
+  "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36 Edg/121.0.0.0",
+];
+
+function getRandomUserAgent() {
+  return USER_AGENTS[Math.floor(Math.random() * USER_AGENTS.length)];
+}
+
+function getTimestamp() {
+  const options = {
+    timeZone: "Europe/Paris",
+    day: "2-digit",
+    month: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  };
+  // Format: "DD/MM HH:mm:ss" in France timezone
+  const string = new Date()
+    .toLocaleString("en-GB", options)
+    .replace(",", "")
+    .replace(/\//g, "-");
+  return `[${string}]`;
+}
+
+const API_URL = "https://app.im.skeepers.io/api/v3/campaigns";
+const LOGIN_URL = "https://creator.im.skeepers.io/auth/signin/fr";
+const TARGET_REGION = process.env.TARGET_REGION || "FR"; // Default to France
+const CHECK_INTERVAL = 2; // Fixed 2-second interval for max speed
+const FAST_SCAN_PAGE_DEPTH = 20; // Scan deeper by default (Early Exit ensures efficiency)
+const DEEP_SCAN_PAGE_DEPTH = 50; // Periodically scan very deep
+const DEEP_CHECK_AFTER_RUNS = 10; // Every 10th cycle uses a deeper scan
+const FORCE_DEEP_SCAN = process.env.FORCE_DEEP_SCAN === "true";
+
 const AUTH_FILE = "auth.json";
 
 const SKEEPERS_EMAIL = process.env.SKEEPERS_EMAIL;
 const SKEEPERS_PASSWORD = process.env.SKEEPERS_PASSWORD;
 
-async function performLogin(page) {
-  console.log("Attempting automated login...");
-  await page.goto(LOGIN_URL, { waitUntil: "load", timeout: 60000 });
+let authHeaders = {};
 
-  // Selectors for Skeepers login
-  await page.fill('input[name="email"]', SKEEPERS_EMAIL);
-  await page.fill('input[name="password"]', SKEEPERS_PASSWORD);
-  await page.click('button[type="submit"]');
+// Create persistent agents for faster connection reuse
+const httpAgent = new http.Agent({ keepAlive: true });
+const httpsAgent = new https.Agent({ keepAlive: true });
 
-  // Wait for navigation after login
-  await page.waitForNavigation({
-    waitUntil: "domcontentloaded",
-    timeout: 60000,
-  });
+const axiosInstance = axios.create({
+  httpAgent,
+  httpsAgent,
+  timeout: 15000,
+});
 
-  // Save state
-  await page.context().storageState({ path: AUTH_FILE });
-  console.log("Login successful and session saved.");
-}
+// Cache for seen campaigns to avoid file I/O on every cycle
+let cachedSeenCampaigns = [];
+let cachedSeenCampaignIds = new Set();
+let isSeenCampaignsLoaded = false;
 
-async function scrapeSkeepers() {
-  let browser;
+// Global tracker for available pages to avoid hitting empty pages
+let globalMaxPages = 10; // Initial guess, will be updated from API meta
+
+/**
+ * Perform login and extract necessary auth headers
+ */
+async function refreshAuth() {
+  console.log(`${getTimestamp()} Refreshing authentication session...`);
+  const browser = await chromium.launch({ headless: true });
+  const context = await browser.newContext();
+  const page = await context.newPage();
+
   try {
-    browser = await chromium.launch({
-      headless: HEADLESS,
-      args: ["--disable-gpu", "--disable-dev-shm-usage"],
-    });
-    let context;
+    await page.goto(LOGIN_URL, { waitUntil: "networkidle", timeout: 60000 });
 
-    if (fs.existsSync(AUTH_FILE)) {
-      console.log("Using saved session...");
-      context = await browser.newContext({ storageState: AUTH_FILE });
-    } else {
-      console.log("No saved session. Performing fresh login...");
-      context = await browser.newContext();
-    }
-
-    const page = await context.newPage();
-    // Small delay to stabilize browser process on Windows
-    await page.waitForTimeout(2000);
-
-    // Go to monitor URL
-    console.log(`Navigating to ${MONITOR_URL}...`);
-    await page.goto(MONITOR_URL, {
-      waitUntil: "domcontentloaded",
-      timeout: 60000,
-    });
-
-    // If we are redirected to login/signin, perform login
+    // Check if we need to login
     if (page.url().includes("login") || page.url().includes("signin")) {
-      await performLogin(page);
-      await page.goto(MONITOR_URL, {
-        waitUntil: "domcontentloaded",
+      console.log(`${getTimestamp()} Automated login in progress...`);
+      await page.fill('input[name="email"]', SKEEPERS_EMAIL);
+      await page.fill('input[name="password"]', SKEEPERS_PASSWORD);
+      await page.click('button[type="submit"]');
+      await page.waitForNavigation({
+        waitUntil: "networkidle",
         timeout: 60000,
       });
     }
 
-    // --- SELECTOR LOGIC ---
-    // Based on actual HTML: campaigns are in <a> tags with class starting with "Campaign-sc-"
-    const campaignSelector = 'a[class*="Campaign-sc-"]';
+    // Save storage state
+    await context.storageState({ path: AUTH_FILE });
 
-    try {
-      await page.waitForSelector(campaignSelector, { timeout: 15000 });
-    } catch (e) {
-      console.warn(
-        "Timed out waiting for campaign cards. The page might not have loaded or there are no campaigns.",
+    // Extract token from localStorage
+    const token = await page.evaluate(() => {
+      // Try to find the token in known localStorage keys
+      return (
+        localStorage.getItem("skeepers_auth_token_production") ||
+        localStorage.getItem("token") ||
+        localStorage.getItem("auth_token") ||
+        localStorage.getItem("skeepers_auth_token")
       );
-      console.log(`Current URL: ${page.url()}`);
-      // Take a screenshot for debugging
-      await page.screenshot({ path: "debug-no-campaigns.png" });
-      return;
-    }
+    });
 
-    const campaigns = await page.$$(campaignSelector);
-    console.log(`Found ${campaigns.length} campaigns on page.`);
+    if (token) {
+      authHeaders = {
+        "access-token": token,
+        "x-requested-with": "XMLHttpRequest",
+        Accept: "application/json",
+        "Content-Type": "application/json",
+        Origin: "https://creator.im.skeepers.io",
+        Referer: "https://creator.im.skeepers.io/",
+        "User-Agent": getRandomUserAgent(),
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+      };
+      console.log(
+        `${getTimestamp()} Auth token extracted successfully and headers updated.`,
+      );
+    } else {
+      // Fallback: try to find it in cookies
+      const cookies = await context.cookies();
+      const accessTokenCookie = cookies.find(
+        (c) =>
+          c.name === "access-token" ||
+          c.name === "skeepers_auth_token_production",
+      );
 
-    let seenProducts = await loadSeenProducts();
-    let newCount = 0;
-
-    for (const campaign of campaigns) {
-      try {
-        // Get the href directly from the <a> tag
-        const href = await campaign.getAttribute("href");
-
-        if (!href) continue;
-
-        // Extract campaign ID from href (e.g., /campaigns/hd5lb -> hd5lb)
-        const campaignId = href.split("/").pop();
-
-        // Get the title from the <strong> tag with class starting with "Title-sc-"
-        const titleElement = await campaign.$('strong[class*="Title-sc-"]');
-        const title = titleElement
-          ? (await titleElement.textContent()).trim()
-          : "New Campaign";
-
-        // Get the store name
-        const storeElement = await campaign.$('div[class*="StoreTitle-sc-"]');
-        const storeName = storeElement
-          ? (await storeElement.textContent()).trim()
-          : "";
-
-        // CHECK IF SOLD OUT
-        const soldOutElement = await campaign.$('[class*="OutOfStock-sc-"]');
-        const isSoldOut = soldOutElement !== null;
-
-        const fullLink = href.startsWith("http")
-          ? href
-          : `https://creator.im.skeepers.io${href}`;
-
-        // Find existing product in database
-        const existingProductIndex = seenProducts.findIndex(
-          (p) => p.id === campaignId,
-        );
-
-        if (existingProductIndex === -1) {
-          // NEW PRODUCT
-          const productInfo = storeName ? `${title} - ${storeName}` : title;
-
-          console.log(
-            `✨ NEW CAMPAIGN DETECTED: ${productInfo} (${campaignId}) [SoldOut: ${isSoldOut}]`,
-          );
-
-          // Add to seen products with full metadata
-          seenProducts = addProduct(seenProducts, {
-            id: campaignId,
-            title: title,
-            storeName: storeName,
-            link: fullLink,
-            isSoldOut: isSoldOut,
-          });
-
-          // ONLY NOTIFY IF NOT SOLD OUT
-          if (!isSoldOut) {
-            await notifyNewProduct(productInfo, fullLink);
-            newCount++;
-          } else {
-            console.log(
-              `⏭️ Skipping notification for ${productInfo} (Sold out)`,
-            );
-          }
-        } else {
-          // EXISTING PRODUCT - Update its metadata and status
-          const existingProduct = seenProducts[existingProductIndex];
-          const oldStatus = existingProduct.isSoldOut;
-
-          // Update details (to fill in "Unknown" from migration or refresh data)
-          existingProduct.title = title;
-          existingProduct.storeName = storeName;
-          existingProduct.link = fullLink;
-          existingProduct.isSoldOut = isSoldOut;
-
-          // If it was sold out and is now available, notify!
-          if (oldStatus === true && isSoldOut === false) {
-            const productInfo = storeName ? `${title} - ${storeName}` : title;
-            console.log(
-              `🔥 PRODUCT BACK IN STOCK: ${productInfo} (${campaignId})`,
-            );
-            await notifyNewProduct(`[BACK IN STOCK] ${productInfo}`, fullLink);
-          }
-        }
-      } catch (err) {
-        console.error("Error processing campaign:", err);
-        continue;
+      if (accessTokenCookie) {
+        authHeaders = {
+          "access-token": accessTokenCookie.value,
+          "x-requested-with": "XMLHttpRequest",
+          Accept: "application/json",
+          Origin: "https://creator.im.skeepers.io",
+          Referer: "https://creator.im.skeepers.io/",
+          "User-Agent": getRandomUserAgent(),
+        };
+        console.log(`${getTimestamp()} Token found in cookies successfully.`);
+      } else {
+        console.warn("Could not find auth token in localStorage or cookies.");
       }
     }
-
-    // Update last checked timestamp for all products
-    seenProducts = updateLastChecked(seenProducts);
-
-    // Save to database
-    await saveSeenProducts(seenProducts);
-
-    if (newCount > 0) {
-      console.log(`✅ Saved ${newCount} new campaign(s) to database.`);
-    } else {
-      console.log("No new campaigns found.");
-    }
   } catch (error) {
-    console.error("An error occurred during scraping:", error);
+    console.error("Error during auth refresh:", error);
   } finally {
-    if (browser) await browser.close();
+    await browser.close();
   }
 }
 
-async function main() {
-  console.log("--- Skeepers Creator Monitor Started ---");
+/**
+ * Fetch a single page of campaigns
+ */
+async function fetchCampaignPage(pageNumber) {
+  try {
+    const response = await axiosInstance.get(API_URL, {
+      params: {
+        format: "attributes",
+        include: "store",
+        "page[size]": 40,
+        "page[number]": pageNumber,
+        sort: "-last_published_at",
+        cache_buster: Date.now(),
+      },
+      headers: {
+        ...authHeaders,
+        "Cache-Control": "no-cache",
+        Pragma: "no-cache",
+        "If-None-Match": undefined,
+        "If-Modified-Since": undefined,
+      },
+    });
+
+    // Update global max pages if found in meta
+    if (response.data && response.data.meta && response.data.meta.pagination) {
+      const { total_pages } = response.data.meta.pagination;
+      if (total_pages) {
+        globalMaxPages = total_pages;
+      }
+    }
+
+    return response.data?.data || response.data || [];
+  } catch (error) {
+    if (
+      error.response &&
+      (error.response.status === 401 || error.response.status === 403)
+    ) {
+      console.log(`${getTimestamp()} Session expired. Refreshing auth...`);
+      await refreshAuth();
+      // Retry once after refresh
+      return await fetchCampaignPage(pageNumber);
+    }
+    console.error(
+      `${getTimestamp()} Error fetching page ${pageNumber}:`,
+      error.message,
+    );
+    return [];
+  }
+}
+
+/**
+ * Helper for sleep
+ */
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/**
+ * Process a list of campaigns and notify for new ones
+ * @returns {number} Number of new campaigns found
+ */
+async function processCampaigns(
+  campaigns,
+  seenCampaigns,
+  seenCampaignIds,
+  pageNumber = 1,
+) {
+  let newlySeenCount = 0;
+  const target = (TARGET_REGION || "FR").toUpperCase();
+
+  for (const campaign of campaigns) {
+    const campaignId = String(campaign.id);
+    const attrs = campaign.attributes || campaign;
+    const countryCode = attrs.store?.country_code || "";
+    const currentCountry = (countryCode || "").toUpperCase();
+
+    // Mark as seen immediately regardless of region filter
+    // This allows us to know we've already scanned this item globally
+    if (!seenCampaignIds.has(campaignId)) {
+      seenCampaigns.push(campaignId);
+      seenCampaignIds.add(campaignId);
+    } else {
+      // If we already had it in our memory Set, it's not "newly seen" in this run
+      // This part is mostly for safety as the caller usually checks this
+      continue;
+    }
+
+    // Region Filter for notifications
+    if (target && currentCountry !== target) {
+      continue;
+    }
+
+    const title = attrs.title || "Unknown Campaign";
+    const storeName = attrs.store?.display_name || attrs.store?.name || "";
+    const productInfo = storeName ? `${title} - ${storeName}` : title;
+
+    const webPath = campaign.web_path || attrs.web_path || "";
+    const cleanPath = webPath.startsWith("/creators")
+      ? webPath.replace("/creators", "")
+      : webPath;
+    const fullLink = `https://creator.im.skeepers.io${cleanPath}`;
+
+    const photoUrl =
+      attrs.photo_urls?.medium ||
+      attrs.photo_urls?.large ||
+      attrs.photo_urls?.small ||
+      "";
+
+    const isSoldOut = attrs.sold_out === true;
+    const status = attrs.status || "active";
+
+    // Autonomous Debug Logging (Lag Calculation)
+    const publishedAt =
+      attrs.last_published_at || attrs.published_at || attrs.created_at;
+    let lagSeconds = "Unknown";
+    if (publishedAt) {
+      const pubTime = new Date(publishedAt).getTime();
+      const nowTime = Date.now();
+      lagSeconds = Math.round((nowTime - pubTime) / 1000);
+    }
+
+    logDetectionDebug({
+      id: campaignId,
+      name: productInfo,
+      status: status,
+      soldOut: isSoldOut,
+      lag: lagSeconds,
+      page: pageNumber,
+    });
+
+    console.log(
+      `${getTimestamp()} ✨ New campaign detected [${currentCountry}]: ${productInfo}`,
+    );
+    console.log(
+      `                   └─ Status: ${status} | Sold Out: ${isSoldOut} | Lag: ${lagSeconds}s`,
+    );
+
+    // Fire notification for ALL new items (including sold out) so user can track them
+    console.log(`                   └─ 📧 Sending notification...`);
+    notifyNewProduct(productInfo, fullLink, photoUrl, status, isSoldOut).catch(
+      (err) => console.error(`${getTimestamp()} Notification error:`, err),
+    );
+
+    newlySeenCount++;
+  }
+  return newlySeenCount;
+}
+
+/**
+ * Optimized check logic: Parallel fetching and depth control
+ * @param {number} maxPage - Max pages to check (default 1 for speed)
+ */
+async function checkForNewCampaigns(maxPage = 1) {
+  try {
+    console.log(
+      `${getTimestamp()} Checking campaigns (depth: ${maxPage} page[s])...`,
+    );
+
+    // Load from disk only once at startup
+    if (!isSeenCampaignsLoaded) {
+      cachedSeenCampaigns = await loadSeenCampaigns();
+      cachedSeenCampaignIds = new Set(cachedSeenCampaigns.map(String));
+      isSeenCampaignsLoaded = true;
+    }
+
+    let totalNewlySeen = 0;
+    let stopScan = false;
+
+    // Respect the globalMaxPages reported by the API to never hit empty pages
+    const effectiveMaxPage = Math.min(maxPage, globalMaxPages);
+
+    // Use sequential fetching to avoid hitting extra pages
+    // Since items are sorted by date, as soon as we hit a 'seen' item, we can stop.
+    for (let p = 1; p <= effectiveMaxPage; p++) {
+      const campaigns = await fetchCampaignPage(p);
+      console.log(
+        `${getTimestamp()} Page ${p} fetched ${campaigns.length} campaign(s).`,
+      );
+
+      if (!campaigns || campaigns.length === 0) break;
+
+      let pageNewlySeen = 0;
+      let alreadySeenOnThisPage = false;
+
+      for (const campaign of campaigns) {
+        const campaignId = String(campaign.id);
+
+        if (cachedSeenCampaignIds.has(campaignId)) {
+          // If we encounter an item we've already seen in a PREVIOUS run, 
+          // it means we've reached the boundary of new items.
+          alreadySeenOnThisPage = true;
+          break;
+        }
+
+        // Process this item (this adds it to global seen set and notifies if match)
+        const added = await processCampaigns(
+          [campaign],
+          cachedSeenCampaigns,
+          cachedSeenCampaignIds,
+          p,
+        );
+        pageNewlySeen += added;
+      }
+
+      totalNewlySeen += pageNewlySeen;
+
+      if (alreadySeenOnThisPage) {
+        console.log(`${getTimestamp()} Boundary of new campaigns reached on page ${p}. Stopping search.`);
+        stopScan = true;
+        break;
+      }
+
+      // If page is not full, it's the last page anyway
+      if (campaigns.length < 40) {
+        console.log(`${getTimestamp()} Reached the end of available campaigns.`);
+        break;
+      }
+    }
+
+    if (totalNewlySeen > 0) {
+      await saveSeenCampaigns(cachedSeenCampaigns);
+    }
+
+    return totalNewlySeen;
+  } catch (error) {
+    console.error(`${getTimestamp()} Error in checkForNewCampaigns:`, error);
+    return 0;
+  }
+}
+
+/**
+ * Main monitoring loop
+ */
+async function startMonitor() {
+  console.log(`${getTimestamp()} --- Skeepers API Monitor Started ---`);
+
   if (!SKEEPERS_EMAIL || !SKEEPERS_PASSWORD) {
-    console.error("ERROR: SKEEPERS_EMAIL or SKEEPERS_PASSWORD not set in .env");
+    console.error(
+      `${getTimestamp()} ERROR: SKEEPERS_EMAIL or SKEEPERS_PASSWORD not set in .env`,
+    );
     process.exit(1);
   }
 
-  let lastHeartbeat = 0;
-  let scrapeCount = 0;
-  const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
+  // Initial auth
+  await refreshAuth();
 
-  if (process.env.RUN_ONCE === "true") {
-    console.log("Running in SINGLE-RUN mode (RUN_ONCE=true)...");
-    try {
-      await scrapeSkeepers();
-      console.log("Scrape completed successfully.");
-    } catch (err) {
-      console.error("Scrape failed:", err);
-      process.exit(1);
-    }
-    process.exit(0);
-  }
+  let lastHeartbeat = Date.now();
+  let scrapeCount = 0;
+  let runIndex = 0; // Tracks cycle number for periodic deep checks
+  const HEARTBEAT_INTERVAL = 24 * 60 * 60 * 1000; // 24 hours
 
   while (true) {
     try {
-      await scrapeSkeepers();
+      // Check France Time/Day (Europe/Paris)
+      const franceDate = new Date(
+        new Date().toLocaleString("en-US", { timeZone: "Europe/Paris" }),
+      );
+      const dayOfWeek = franceDate.getDay(); // 0 = Sun, 6 = Sat
+
+      if (dayOfWeek === 0 || dayOfWeek === 6) {
+        console.log(
+          `${getTimestamp()} 📅 [FRANCE TIME] It is ${dayOfWeek === 0 ? "Sunday" : "Saturday"}. Scraper is in Sleep Mode (Weekend).`,
+        );
+        console.log(`${getTimestamp()} Waiting 1 hour before next check...`);
+        await new Promise((resolve) => setTimeout(resolve, 3600 * 1000));
+        continue;
+      }
+
+      runIndex++;
+      // Fast check: scan multiple pages every cycle for earlier detection
+      // Deep check: scan even more pages every few runs
+      const isDeepCheck =
+        FORCE_DEEP_SCAN || runIndex % DEEP_CHECK_AFTER_RUNS === 0;
+      const pageDepth = isDeepCheck
+        ? DEEP_SCAN_PAGE_DEPTH
+        : FAST_SCAN_PAGE_DEPTH;
+
+      if (FORCE_DEEP_SCAN) {
+        console.log(
+          `${getTimestamp()} === FORCE DEEP SCAN (Limit: ${pageDepth} pages) ===`,
+        );
+      } else if (isDeepCheck) {
+        console.log(
+          `${getTimestamp()} === Running DEEP SCAN (Limit: ${pageDepth} pages) ===`,
+        );
+      } else {
+        console.log(
+          `${getTimestamp()} === Scanning for new products (Limit: ${pageDepth} pages) ===`,
+        );
+      }
+      await checkForNewCampaigns(pageDepth);
+
       scrapeCount++;
 
-      // Check if it's time to send a status heartbeat to the client
+      // Reset run index if it gets too large
+      if (runIndex > 10000) runIndex = 0;
+
+      // Heartbeat logic
       const now = Date.now();
       if (now - lastHeartbeat >= HEARTBEAT_INTERVAL) {
-        console.log("Sending daily heartbeat status email...");
-        const seenProducts = await loadSeenProducts();
+        console.log(`${getTimestamp()} Sending daily heartbeat...`);
+        const seenCampaigns = await loadSeenCampaigns();
         await sendHeartbeat({
-          totalItems: seenProducts.length,
-          interval: CHECK_INTERVAL,
+          totalItems: seenCampaigns.length,
+          interval: `${CHECK_INTERVAL}`,
           scrapeCount: scrapeCount,
         });
         lastHeartbeat = now;
-        scrapeCount = 0; // Reset counter for the next 24-hour period
+        scrapeCount = 0;
       }
     } catch (err) {
-      console.error("Monitor loop error:", err);
+      console.error(`${getTimestamp()} Error in monitor cycle:`, err);
     }
-    console.log(`Waiting ${CHECK_INTERVAL} seconds for next check...`);
+
+    console.log(
+      `${getTimestamp()} Cycle ${runIndex} finished. Waiting ${CHECK_INTERVAL}s for next check...`,
+    );
     await new Promise((resolve) => setTimeout(resolve, CHECK_INTERVAL * 1000));
   }
 }
 
-main();
+// Start the application
+if (process.env.RUN_ONCE === "true") {
+  (async () => {
+    await refreshAuth();
+    await checkForNewCampaigns();
+    process.exit(0);
+  })();
+} else {
+  startMonitor();
+}
